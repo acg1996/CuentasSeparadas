@@ -1,83 +1,97 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
+import {
+  computeBalances,
+  computeSettlements,
+  createId,
+  createTrip,
+  normalizeShares,
+  pickColor,
+  totalShares,
+} from './lib/trips.js'
+import { buildShareLink, clearSharedTrip, loadData, readSharedTrip, saveData } from './lib/storage.js'
 
-const initialData = {
-  tripName: 'Gastos del viaje',
-  people: [
-    { id: 'parents', name: 'Araceli y Santi', color: '#7567f8' },
-    { id: 'albert', name: 'Albert', color: '#ef7d5b' },
-    { id: 'naomi', name: 'Naomi', color: '#21a58b' },
-  ],
-  expenses: [],
-}
-
-const storageKey = 'cuentas-separadas-data'
 const money = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' })
+const percent = new Intl.NumberFormat('es-ES', { style: 'percent', maximumFractionDigits: 1 })
 
-function loadData() {
-  try {
-    const saved = localStorage.getItem(storageKey)
-    return saved ? JSON.parse(saved) : initialData
-  } catch {
-    return initialData
+function emptyForm(trip) {
+  return {
+    description: '',
+    amount: '',
+    paidBy: trip.participants[0]?.id ?? '',
+    sharedBy: trip.participants.map((participant) => participant.id),
   }
 }
 
+function initData() {
+  const stored = loadData()
+  const shared = readSharedTrip()
+  if (!shared) return stored
+
+  clearSharedTrip()
+  const trips = stored.trips.some((trip) => trip.id === shared.id)
+    ? stored.trips.map((trip) => (trip.id === shared.id ? shared : trip))
+    : [shared, ...stored.trips]
+  return { ...stored, trips, activeTripId: shared.id }
+}
+
 function App() {
-  const [data, setData] = useState(loadData)
+  const [data, setData] = useState(initData)
   const [showPersonForm, setShowPersonForm] = useState(false)
   const [personName, setPersonName] = useState('')
-  const [form, setForm] = useState(() => ({
-    description: '',
-    amount: '',
-    paidBy: initialData.people[0].id,
-    sharedBy: initialData.people.map((person) => person.id),
-  }))
+  const [personShares, setPersonShares] = useState('1')
+  const [sharesDrafts, setSharesDrafts] = useState({})
+  const [shareStatus, setShareStatus] = useState('')
+
+  const trip = data.trips.find((item) => item.id === data.activeTripId) ?? data.trips[0]
+  const [form, setForm] = useState(() => emptyForm(trip))
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(data))
+    saveData(data)
   }, [data])
 
-  const balances = useMemo(() => {
-    const result = Object.fromEntries(data.people.map((person) => [person.id, 0]))
-    data.expenses.forEach((expense) => {
-      result[expense.paidBy] += expense.amount
-      const share = expense.amount / expense.sharedBy.length
-      expense.sharedBy.forEach((personId) => {
-        result[personId] -= share
-      })
-    })
-    return result
-  }, [data])
+  useEffect(() => {
+    setForm(emptyForm(trip))
+    setShareStatus('')
+    setSharesDrafts({})
+    // Al cambiar de viaje el formulario debe apuntar a los participantes del nuevo viaje.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trip.id])
 
-  const settlements = useMemo(() => {
-    const creditors = data.people
-      .map((person) => ({ ...person, amount: balances[person.id] }))
-      .filter((person) => person.amount > 0.005)
-    const debtors = data.people
-      .map((person) => ({ ...person, amount: -balances[person.id] }))
-      .filter((person) => person.amount > 0.005)
-    const payments = []
-    let creditorIndex = 0
-    let debtorIndex = 0
+  const balances = useMemo(() => computeBalances(trip), [trip])
+  const settlements = useMemo(() => computeSettlements(trip, balances), [trip, balances])
+  const total = trip.expenses.reduce((sum, expense) => sum + expense.amount, 0)
+  const shares = totalShares(trip.participants)
 
-    while (creditorIndex < creditors.length && debtorIndex < debtors.length) {
-      const creditor = creditors[creditorIndex]
-      const debtor = debtors[debtorIndex]
-      const amount = Math.min(creditor.amount, debtor.amount)
-      payments.push({ from: debtor.name, to: creditor.name, amount })
-      creditor.amount -= amount
-      debtor.amount -= amount
-      if (creditor.amount < 0.005) creditorIndex += 1
-      if (debtor.amount < 0.005) debtorIndex += 1
-    }
-    return payments
-  }, [balances, data.people])
-
-  const total = data.expenses.reduce((sum, expense) => sum + expense.amount, 0)
+  function updateTrip(updater) {
+    setData((current) => ({
+      ...current,
+      trips: current.trips.map((item) => (item.id === trip.id ? updater(item) : item)),
+    }))
+  }
 
   function updateTripName(event) {
-    setData((current) => ({ ...current, tripName: event.target.value }))
+    const name = event.target.value
+    updateTrip((current) => ({ ...current, name }))
+  }
+
+  function selectTrip(event) {
+    const activeTripId = event.target.value
+    setData((current) => ({ ...current, activeTripId }))
+  }
+
+  function addTrip() {
+    const newTrip = createTrip('Nuevo viaje', [{ name: 'Yo', shares: 1 }])
+    setData((current) => ({ ...current, trips: [...current.trips, newTrip], activeTripId: newTrip.id }))
+  }
+
+  function removeTrip() {
+    if (data.trips.length === 1) return
+    if (!window.confirm(`¿Quieres borrar el viaje «${trip.name}» y todos sus gastos?`)) return
+    setData((current) => {
+      const trips = current.trips.filter((item) => item.id !== trip.id)
+      return { ...current, trips, activeTripId: trips[0].id }
+    })
   }
 
   function togglePerson(personId) {
@@ -94,11 +108,11 @@ function App() {
     const amount = Number(form.amount.replace(',', '.'))
     if (!form.description.trim() || !Number.isFinite(amount) || amount <= 0 || !form.sharedBy.length) return
 
-    setData((current) => ({
+    updateTrip((current) => ({
       ...current,
       expenses: [
         {
-          id: crypto.randomUUID(),
+          id: createId(),
           description: form.description.trim(),
           amount,
           paidBy: form.paidBy,
@@ -113,22 +127,84 @@ function App() {
   function addPerson(event) {
     event.preventDefault()
     if (!personName.trim()) return
-    const id = crypto.randomUUID()
-    const colors = ['#df5d92', '#3295d8', '#be8a31', '#8a68ce']
-    const person = { id, name: personName.trim(), color: colors[data.people.length % colors.length] }
-    setData((current) => ({ ...current, people: [...current.people, person] }))
+    const id = createId()
+    updateTrip((current) => ({
+      ...current,
+      participants: [
+        ...current.participants,
+        {
+          id,
+          name: personName.trim(),
+          shares: normalizeShares(personShares.replace(',', '.')),
+          color: pickColor(current.participants.length),
+        },
+      ],
+    }))
     setForm((current) => ({ ...current, sharedBy: [...current.sharedBy, id] }))
     setPersonName('')
+    setPersonShares('1')
     setShowPersonForm(false)
   }
 
-  function removeExpense(id) {
-    setData((current) => ({ ...current, expenses: current.expenses.filter((expense) => expense.id !== id) }))
+  function editShares(personId, value) {
+    setSharesDrafts((current) => ({ ...current, [personId]: value }))
   }
 
-  function clearTrip() {
+  function commitShares(personId) {
+    const draft = sharesDrafts[personId]
+    setSharesDrafts((current) => {
+      const next = { ...current }
+      delete next[personId]
+      return next
+    })
+    if (draft === undefined) return
+    const value = normalizeShares(draft.replace(',', '.'))
+    updateTrip((current) => ({
+      ...current,
+      participants: current.participants.map((participant) =>
+        participant.id === personId ? { ...participant, shares: value } : participant,
+      ),
+    }))
+  }
+
+  function removePerson(personId) {
+    const person = trip.participants.find((participant) => participant.id === personId)
+    if (!person) return
+    if (!window.confirm(`¿Quitar a ${person.name}? También se borrarán los gastos que haya pagado.`)) return
+
+    updateTrip((current) => ({
+      ...current,
+      participants: current.participants.filter((participant) => participant.id !== personId),
+      expenses: current.expenses
+        .filter((expense) => expense.paidBy !== personId)
+        .map((expense) => ({ ...expense, sharedBy: expense.sharedBy.filter((id) => id !== personId) }))
+        .filter((expense) => expense.sharedBy.length),
+    }))
+    setForm((current) => ({
+      ...current,
+      paidBy: current.paidBy === personId ? (trip.participants.find((item) => item.id !== personId)?.id ?? '') : current.paidBy,
+      sharedBy: current.sharedBy.filter((id) => id !== personId),
+    }))
+  }
+
+  function removeExpense(id) {
+    updateTrip((current) => ({ ...current, expenses: current.expenses.filter((expense) => expense.id !== id) }))
+  }
+
+  function clearExpenses() {
     if (window.confirm('¿Quieres borrar todos los gastos de este viaje?')) {
-      setData((current) => ({ ...current, expenses: [] }))
+      updateTrip((current) => ({ ...current, expenses: [] }))
+    }
+  }
+
+  async function shareTrip() {
+    const link = buildShareLink(trip)
+    try {
+      await navigator.clipboard.writeText(link)
+      setShareStatus('Enlace copiado. Ábrelo en cualquier dispositivo.')
+    } catch {
+      window.prompt('Copia este enlace para abrir el viaje en otro dispositivo:', link)
+      setShareStatus('')
     }
   }
 
@@ -136,19 +212,30 @@ function App() {
     <main>
       <header className="topbar">
         <div className="brand"><span>÷</span> Cuentas separadas</div>
-        <button className="text-button" type="button" onClick={clearTrip} disabled={!data.expenses.length}>Reiniciar viaje</button>
+        <div className="topbar-actions">
+          <select aria-label="Viaje activo" value={trip.id} onChange={selectTrip}>
+            {data.trips.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <button className="text-button" type="button" onClick={addTrip}>+ Nuevo viaje</button>
+          <button className="text-button" type="button" onClick={removeTrip} disabled={data.trips.length === 1}>Borrar viaje</button>
+          <button className="text-button" type="button" onClick={clearExpenses} disabled={!trip.expenses.length}>Reiniciar gastos</button>
+        </div>
       </header>
 
       <section className="hero">
         <p className="eyebrow">VIAJE COMPARTIDO</p>
-        <input className="trip-name" aria-label="Nombre del viaje" value={data.tripName} onChange={updateTripName} />
+        <input className="trip-name" aria-label="Nombre del viaje" value={trip.name} onChange={updateTripName} />
         <p>Apunta los gastos y deja que las cuentas se cuadren solas.</p>
+        <div className="share">
+          <button className="text-button" type="button" onClick={shareTrip}>🔗 Copiar enlace para compartir</button>
+          {shareStatus && <span role="status">{shareStatus}</span>}
+        </div>
       </section>
 
       <section className="summary" aria-label="Resumen del viaje">
         <div><span>Gasto total</span><strong>{money.format(total)}</strong></div>
-        <div><span>Gastos apuntados</span><strong>{data.expenses.length}</strong></div>
-        <div><span>Participantes</span><strong>{data.people.length}</strong></div>
+        <div><span>Gastos apuntados</span><strong>{trip.expenses.length}</strong></div>
+        <div><span>Participantes</span><strong>{trip.participants.length}</strong></div>
       </section>
 
       <div className="layout">
@@ -156,48 +243,57 @@ function App() {
           <div className="section-heading">
             <div><p className="eyebrow">NUEVO GASTO</p><h2>¿Quién ha pagado?</h2></div>
           </div>
-          <form onSubmit={addExpense}>
-            <div className="field-row">
-              <label>Concepto<input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Ej. Cena del martes" required /></label>
-              <label className="amount">Importe<input inputMode="decimal" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="0,00 €" required /></label>
-            </div>
-            <label>Ha pagado
-              <select value={form.paidBy} onChange={(event) => setForm({ ...form, paidBy: event.target.value })}>
-                {data.people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
-              </select>
-            </label>
-            <fieldset>
-              <legend>Se reparte entre</legend>
-              <div className="people-picker">
-                {data.people.map((person) => (
-                  <label className={`person-choice ${form.sharedBy.includes(person.id) ? 'selected' : ''}`} key={person.id}>
-                    <input type="checkbox" checked={form.sharedBy.includes(person.id)} onChange={() => togglePerson(person.id)} />
-                    <i style={{ backgroundColor: person.color }}>{person.name.slice(0, 1)}</i>{person.name}
-                  </label>
-                ))}
+          {trip.participants.length ? (
+            <form onSubmit={addExpense}>
+              <div className="field-row">
+                <label>Concepto<input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Ej. Cena del martes" required /></label>
+                <label className="amount">Importe<input inputMode="decimal" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="0,00 €" required /></label>
               </div>
-            </fieldset>
-            <button className="primary" type="submit">Añadir gasto <span>→</span></button>
-          </form>
+              <label>Ha pagado
+                <select value={form.paidBy} onChange={(event) => setForm({ ...form, paidBy: event.target.value })}>
+                  {trip.participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.name}</option>)}
+                </select>
+              </label>
+              <fieldset>
+                <legend>Se reparte entre (según el peso de cada participante)</legend>
+                <div className="people-picker">
+                  {trip.participants.map((participant) => (
+                    <label className={`person-choice ${form.sharedBy.includes(participant.id) ? 'selected' : ''}`} key={participant.id}>
+                      <input type="checkbox" checked={form.sharedBy.includes(participant.id)} onChange={() => togglePerson(participant.id)} />
+                      <i style={{ backgroundColor: participant.color }}>{participant.name.slice(0, 1)}</i>{participant.name} ×{participant.shares}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <button className="primary" type="submit">Añadir gasto <span>→</span></button>
+            </form>
+          ) : <p className="hint">Añade primero algún participante para poder apuntar gastos.</p>}
         </section>
 
         <section className="card balances">
           <p className="eyebrow">BALANCE ACTUAL</p><h2>Así van las cuentas</h2>
           <div className="balance-list">
-            {data.people.map((person) => {
-              const balance = balances[person.id]
-              return <div className="balance-row" key={person.id}>
-                <span className="avatar" style={{ backgroundColor: person.color }}>{person.name.slice(0, 1)}</span>
-                <span>{person.name}</span>
+            {trip.participants.map((participant) => {
+              const balance = balances[participant.id] ?? 0
+              return <div className="balance-row" key={participant.id}>
+                <span className="avatar" style={{ backgroundColor: participant.color }}>{participant.name.slice(0, 1)}</span>
+                <span>{participant.name}<small>{percent.format(shares ? participant.shares / shares : 0)} del reparto</small></span>
+                <label className="shares">
+                  <span className="visually-hidden">Peso de {participant.name}</span>
+                  <input inputMode="decimal" value={sharesDrafts[participant.id] ?? String(participant.shares)} onChange={(event) => editShares(participant.id, event.target.value)} onBlur={() => commitShares(participant.id)} aria-label={`Peso de ${participant.name}`} />
+                </label>
                 <strong className={balance >= 0 ? 'positive' : 'negative'}>{balance >= 0 ? '+' : '−'}{money.format(Math.abs(balance))}</strong>
+                <button type="button" className="remove-person" onClick={() => removePerson(participant.id)} aria-label={`Quitar a ${participant.name}`}>×</button>
               </div>
             })}
           </div>
           <button className="add-person" type="button" onClick={() => setShowPersonForm(!showPersonForm)}>+ Añadir participante</button>
           {showPersonForm && <form className="person-form" onSubmit={addPerson}>
             <input autoFocus value={personName} onChange={(event) => setPersonName(event.target.value)} placeholder="Nombre o cuenta conjunta" />
+            <input className="shares-input" inputMode="decimal" value={personShares} onChange={(event) => setPersonShares(event.target.value)} aria-label="Peso del participante" />
             <button type="submit">Añadir</button>
           </form>}
+          <p className="hint">El peso indica cuántas partes paga cada participante: una cuenta conjunta de dos personas usa peso 2.</p>
         </section>
       </div>
 
@@ -209,13 +305,13 @@ function App() {
       </section>
 
       <section className="expenses">
-        <div className="section-heading"><div><p className="eyebrow">HISTORIAL</p><h2>Gastos del viaje</h2></div><span>{data.expenses.length} {data.expenses.length === 1 ? 'gasto' : 'gastos'}</span></div>
-        {data.expenses.length ? <div className="expense-list">
-          {data.expenses.map((expense) => {
-            const payer = data.people.find((person) => person.id === expense.paidBy)
+        <div className="section-heading"><div><p className="eyebrow">HISTORIAL</p><h2>Gastos del viaje</h2></div><span>{trip.expenses.length} {trip.expenses.length === 1 ? 'gasto' : 'gastos'}</span></div>
+        {trip.expenses.length ? <div className="expense-list">
+          {trip.expenses.map((expense) => {
+            const payer = trip.participants.find((participant) => participant.id === expense.paidBy)
             return <article className="expense" key={expense.id}>
               <span className="avatar" style={{ backgroundColor: payer?.color }}>{payer?.name.slice(0, 1)}</span>
-              <div><h3>{expense.description}</h3><p>Pagó {payer?.name} · entre {expense.sharedBy.length} {expense.sharedBy.length === 1 ? 'persona' : 'personas'}</p></div>
+              <div><h3>{expense.description}</h3><p>Pagó {payer?.name} · entre {expense.sharedBy.length} {expense.sharedBy.length === 1 ? 'participante' : 'participantes'}</p></div>
               <strong>{money.format(expense.amount)}</strong>
               <button type="button" onClick={() => removeExpense(expense.id)} aria-label={`Eliminar ${expense.description}`}>×</button>
             </article>
