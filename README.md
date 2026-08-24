@@ -12,11 +12,21 @@ Aplicación web para repartir los gastos de un viaje entre grupos y personas.
   porcentaje que le corresponde del reparto.
 - **Reparto proporcional.** Cada gasto se divide entre los participantes marcados
   en proporción a sus pesos, y la app calcula los pagos mínimos para saldar todo.
+  Quien adelanta el dinero se apunta el importe completo del gasto, tenga el peso
+  que tenga, así que una cuenta conjunta que paga 100 € recupera lo que no le
+  corresponde de su parte.
+- **Cuánto ha gastado cada uno.** Debajo de cada balance se ve lo que ha pagado esa
+  persona o cuenta y lo que le corresponde del reparto; si el peso es mayor que 1
+  también se muestra el importe por persona.
 - **Compartir el viaje.** El botón *Copiar enlace para compartir* genera una URL
   que lleva el viaje codificado. Al abrirla en otro dispositivo (o enviarla a otra
-  persona) se importa el viaje con sus participantes y gastos. Como los datos
-  viajan en el enlace, no hace falta ningún servidor; hay que volver a compartir el
-  enlace tras añadir gastos nuevos para que el resto vea los cambios.
+  persona) el viaje se **fusiona** con el que ya haya en ese dispositivo: se
+  conservan los gastos propios y se añaden los del enlace (los gastos con el mismo
+  identificador se actualizan). Como los datos viajan en el enlace y no hay ningún
+  servidor, los cambios no se propagan solos: cada vez que alguien apunta un gasto
+  tiene que volver a compartir su enlace para que el resto lo vea. Borrar un gasto
+  no se propaga: si la otra persona vuelve a compartir un enlace antiguo, ese gasto
+  reaparecerá.
 
 ## Publicación gratuita
 
@@ -35,4 +45,5 @@ El proyecto se publica automáticamente en GitHub Pages al hacer *push* a `main`
    `https://acg1996.github.io/CuentasSeparadas/`.
 
 Los datos de gastos se guardan en el almacenamiento local de cada navegador; para
-usarlos en otro dispositivo hay que compartir el enlace del viaje.
+usarlos en otro dispositivo hay que compartir el enlace del viaje. No hay
+sincronización automática entre dispositivos porque la app no tiene servidor.

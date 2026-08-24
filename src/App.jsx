@@ -3,8 +3,10 @@ import './App.css'
 import {
   computeBalances,
   computeSettlements,
+  computeSpending,
   createId,
   createTrip,
+  mergeTrips,
   normalizeShares,
   pickColor,
   totalShares,
@@ -29,8 +31,10 @@ function initData() {
   if (!shared) return stored
 
   clearSharedTrip()
+  // Se fusiona con lo que ya haya en este dispositivo para no perder gastos propios
+  // ni los que haya añadido la otra persona.
   const trips = stored.trips.some((trip) => trip.id === shared.id)
-    ? stored.trips.map((trip) => (trip.id === shared.id ? shared : trip))
+    ? stored.trips.map((trip) => (trip.id === shared.id ? mergeTrips(trip, shared) : trip))
     : [shared, ...stored.trips]
   return { ...stored, trips, activeTripId: shared.id }
 }
@@ -59,6 +63,7 @@ function App() {
   }, [trip.id])
 
   const balances = useMemo(() => computeBalances(trip), [trip])
+  const spending = useMemo(() => computeSpending(trip), [trip])
   const settlements = useMemo(() => computeSettlements(trip, balances), [trip, balances])
   const total = trip.expenses.reduce((sum, expense) => sum + expense.amount, 0)
   const shares = totalShares(trip.participants)
@@ -201,7 +206,7 @@ function App() {
     const link = buildShareLink(trip)
     try {
       await navigator.clipboard.writeText(link)
-      setShareStatus('Enlace copiado. Ábrelo en cualquier dispositivo.')
+      setShareStatus('Enlace copiado con los gastos de ahora mismo.')
     } catch {
       window.prompt('Copia este enlace para abrir el viaje en otro dispositivo:', link)
       setShareStatus('')
@@ -229,6 +234,7 @@ function App() {
         <div className="share">
           <button className="text-button" type="button" onClick={shareTrip}>🔗 Copiar enlace para compartir</button>
           {shareStatus && <span role="status">{shareStatus}</span>}
+          <span className="share-note">Al abrir un enlace los gastos se fusionan con los de este dispositivo; comparte el enlace de nuevo cada vez que apuntes algo para que el resto lo vea.</span>
         </div>
       </section>
 
@@ -236,6 +242,7 @@ function App() {
         <div><span>Gasto total</span><strong>{money.format(total)}</strong></div>
         <div><span>Gastos apuntados</span><strong>{trip.expenses.length}</strong></div>
         <div><span>Participantes</span><strong>{trip.participants.length}</strong></div>
+        <div><span>Personas</span><strong>{shares}</strong></div>
       </section>
 
       <div className="layout">
@@ -275,15 +282,20 @@ function App() {
           <div className="balance-list">
             {trip.participants.map((participant) => {
               const balance = balances[participant.id] ?? 0
+              const { paid = 0, owed = 0 } = spending[participant.id] ?? {}
               return <div className="balance-row" key={participant.id}>
                 <span className="avatar" style={{ backgroundColor: participant.color }}>{participant.name.slice(0, 1)}</span>
-                <span>{participant.name}<small>{percent.format(shares ? participant.shares / shares : 0)} del reparto</small></span>
+                <span className="balance-person">{participant.name}<small>{percent.format(shares ? participant.shares / shares : 0)} del reparto{participant.shares > 1 ? ` · cuenta como ${participant.shares}` : ''}</small></span>
                 <label className="shares">
                   <span className="visually-hidden">Peso de {participant.name}</span>
                   <input inputMode="decimal" value={sharesDrafts[participant.id] ?? String(participant.shares)} onChange={(event) => editShares(participant.id, event.target.value)} onBlur={() => commitShares(participant.id)} aria-label={`Peso de ${participant.name}`} />
                 </label>
                 <strong className={balance >= 0 ? 'positive' : 'negative'}>{balance >= 0 ? '+' : '−'}{money.format(Math.abs(balance))}</strong>
                 <button type="button" className="remove-person" onClick={() => removePerson(participant.id)} aria-label={`Quitar a ${participant.name}`}>×</button>
+                <p className="balance-detail">
+                  Ha pagado <b>{money.format(paid)}</b> · le corresponde <b>{money.format(owed)}</b>
+                  {participant.shares > 1 ? ` (${money.format(owed / participant.shares)} por persona)` : ''}
+                </p>
               </div>
             })}
           </div>
@@ -293,7 +305,7 @@ function App() {
             <input className="shares-input" inputMode="decimal" value={personShares} onChange={(event) => setPersonShares(event.target.value)} aria-label="Peso del participante" />
             <button type="submit">Añadir</button>
           </form>}
-          <p className="hint">El peso indica cuántas partes paga cada participante: una cuenta conjunta de dos personas usa peso 2.</p>
+          <p className="hint">El peso indica cuántas partes paga cada participante: una cuenta conjunta de dos personas usa peso 2, así que asume el doble de cada gasto compartido. Lo que paga se le abona entero a quien adelanta el dinero.</p>
         </section>
       </div>
 
@@ -309,9 +321,10 @@ function App() {
         {trip.expenses.length ? <div className="expense-list">
           {trip.expenses.map((expense) => {
             const payer = trip.participants.find((participant) => participant.id === expense.paidBy)
+            const expenseShares = totalShares(trip.participants.filter((participant) => expense.sharedBy.includes(participant.id)))
             return <article className="expense" key={expense.id}>
               <span className="avatar" style={{ backgroundColor: payer?.color }}>{payer?.name.slice(0, 1)}</span>
-              <div><h3>{expense.description}</h3><p>Pagó {payer?.name} · entre {expense.sharedBy.length} {expense.sharedBy.length === 1 ? 'participante' : 'participantes'}</p></div>
+              <div><h3>{expense.description}</h3><p>Pagó {payer?.name} · entre {expense.sharedBy.length} {expense.sharedBy.length === 1 ? 'participante' : 'participantes'} ({expenseShares} {expenseShares === 1 ? 'persona' : 'personas'})</p></div>
               <strong>{money.format(expense.amount)}</strong>
               <button type="button" onClick={() => removeExpense(expense.id)} aria-label={`Eliminar ${expense.description}`}>×</button>
             </article>
