@@ -23,10 +23,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      # Requiere que GitHub Pages esté activado manualmente en
+      # Settings → Pages → Build and deployment → GitHub Actions.
+      # No se usa `enablement: true` porque el GITHUB_TOKEN del workflow
+      # no tiene permiso para crear el sitio de Pages.
       - name: Set up Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
