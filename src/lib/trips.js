@@ -107,6 +107,53 @@ export function computeBalances(trip) {
   return balances
 }
 
+export function computeSpending(trip) {
+  const spending = Object.fromEntries(
+    trip.participants.map((participant) => [participant.id, { paid: 0, owed: 0 }]),
+  )
+  const sharesById = Object.fromEntries(trip.participants.map((participant) => [participant.id, participant.shares]))
+
+  trip.expenses.forEach((expense) => {
+    const expenseShares = expense.sharedBy.reduce((sum, id) => sum + (sharesById[id] ?? 0), 0)
+    if (!expenseShares) return
+    if (spending[expense.paidBy]) spending[expense.paidBy].paid += expense.amount
+    expense.sharedBy.forEach((id) => {
+      if (!spending[id]) return
+      spending[id].owed += (expense.amount * (sharesById[id] ?? 0)) / expenseShares
+    })
+  })
+  return spending
+}
+
+export function mergeTrips(local, incoming) {
+  if (!local) return incoming
+  if (!incoming) return local
+
+  const participants = [...local.participants]
+  incoming.participants.forEach((participant) => {
+    const index = participants.findIndex((item) => item.id === participant.id)
+    if (index === -1) participants.push(participant)
+    else participants[index] = { ...participants[index], name: participant.name, shares: participant.shares }
+  })
+
+  const participantIds = new Set(participants.map((participant) => participant.id))
+  const expenses = [...local.expenses]
+  incoming.expenses.forEach((expense) => {
+    const index = expenses.findIndex((item) => item.id === expense.id)
+    if (index === -1) expenses.push(expense)
+    else expenses[index] = expense
+  })
+
+  return {
+    ...local,
+    name: incoming.name || local.name,
+    participants,
+    expenses: expenses
+      .map((expense) => ({ ...expense, sharedBy: expense.sharedBy.filter((id) => participantIds.has(id)) }))
+      .filter((expense) => participantIds.has(expense.paidBy) && expense.sharedBy.length),
+  }
+}
+
 export function computeSettlements(trip, balances) {
   const creditors = trip.participants
     .map((participant) => ({ ...participant, amount: balances[participant.id] ?? 0 }))
